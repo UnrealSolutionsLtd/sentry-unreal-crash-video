@@ -8,6 +8,8 @@ using System.Diagnostics;
 using System.Text;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
+// using EpicGames.OIDC;
+
 
 #if UE_5_0_OR_LATER
 using EpicGames.Core;
@@ -42,6 +44,20 @@ public class Sentry : ModuleRules
 				// ... add private dependencies that you statically link with here ...	
 			}
 		);
+
+		bool bEnableVideoRecording = true;
+		if (bEnableVideoRecording)
+		{
+			PrivateDependencyModuleNames.AddRange(
+				new string[]
+				{
+                    "RuntimeVideoRecorder",
+                }
+			);
+
+            PublicDefinitions.Add("HAS_RUNTIME_VIDEO_RECORDER=1");
+            bEnableVideoRecording = true;
+        }
 
 		string PlatformThirdPartyPath = Path.GetFullPath(Path.Combine(PluginDirectory, "Source", "ThirdParty", Target.Platform.ToString()));
 		string PlatformBinariesPath = Path.GetFullPath(Path.Combine(PluginDirectory, "Binaries", Target.Platform.ToString()));
