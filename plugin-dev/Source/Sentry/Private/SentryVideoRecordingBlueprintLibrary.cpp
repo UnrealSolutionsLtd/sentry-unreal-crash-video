@@ -41,13 +41,6 @@ USentryCrashVideoHandler* USentryVideoRecordingBlueprintLibrary::GetOrCreateVide
 
 	// Create new handler and store it
 	USentryCrashVideoHandler* NewHandler = NewObject<USentryCrashVideoHandler>(GameInstance);
-	if (NewHandler)
-	{
-		// Store as a custom property to prevent GC
-		// Note: This is a workaround since we can't directly add UPROPERTYs to existing classes
-		NewHandler->AddToRoot(); // Prevent garbage collection
-	}
-
 	return NewHandler;
 }
 
