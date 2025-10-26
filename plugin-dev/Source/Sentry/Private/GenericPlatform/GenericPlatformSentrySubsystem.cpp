@@ -916,18 +916,6 @@ void FGenericPlatformSentrySubsystem::TryCaptureEmergencyCrashVideo()
 		MakeShareable(new FGenericPlatformSentryAttachment(VideoPath, TEXT("crash_video.mp4"), TEXT("video/mp4")));
 	
 	AddFileAttachment(VideoAttachment);
-	
-	// Create metadata file for recovery (as backup in case attachment fails)
-	FString MetadataPath = FPaths::Combine(CrashVideoDir, FString::Printf(TEXT("crash_video_%s.meta"), *Timestamp));
-	FString VideoPathFull = FPaths::ConvertRelativePathToFull(VideoPath);
-	FString CrashVideoPathFull = FPaths::ConvertRelativePathToFull(OutputBasePath);
-	FString MetadataContent = FString::Printf(
-		TEXT("VideoPath=%s\nCrashVideoPath=%s\nStatus=CRASH_RECORDED\nTimestamp=%s\n"),
-		*VideoPathFull,
-		*CrashVideoPathFull,
-		*FDateTime::Now().ToString()
-	);
-	FFileHelper::SaveStringToFile(MetadataContent, *MetadataPath);
 #endif
 }
 

@@ -139,14 +139,9 @@ private:
 
 	/**
 	 * Attach video file to current Sentry scope.
+	 * Used for manual video captures (non-crash events).
 	 */
 	bool AttachVideoToSentry(const FString& VideoPath);
-
-	/**
-	 * Pre-attach the video to Sentry scope before crashes occur.
-	 * This ensures the video is registered even if finalization fails.
-	 */
-	void PreAttachVideoToSentry();
 
 	/**
 	 * Clean up old crash video files.
@@ -158,28 +153,6 @@ private:
 	 */
 	FString GenerateVideoFilename() const;
 
-	/**
-	 * Create crash metadata file to track recording state.
-	 * Used for recovery on next startup.
-	 */
-	void CreateCrashMetadataFile();
-
-	/**
-	 * Remove crash metadata file after successful completion.
-	 */
-	void RemoveCrashMetadataFile();
-
-	/**
-	 * Check for and recover crash videos from previous sessions.
-	 * Called on startup.
-	 */
-	void RecoverPreviousCrashVideos();
-
-	/**
-	 * Get the metadata file path for current recording.
-	 */
-	FString GetMetadataFilePath() const;
-
 private:
 	bool bIsRecording = false;
 	FCrashVideoConfig CurrentConfig;
@@ -188,8 +161,5 @@ private:
 	
 	// Crash-resistant state tracking
 	FThreadSafeBool bCrashDetected;
-	
-	// Pre-attachment tracking
-	bool bVideoPreAttached = false;
 };
 
