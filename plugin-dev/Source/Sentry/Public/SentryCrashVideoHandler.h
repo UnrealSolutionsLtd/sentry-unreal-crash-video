@@ -132,22 +132,6 @@ public:
 
 private:
 	/**
-	 * Initialize the crash detection hook.
-	 */
-	void InitializeCrashDetection();
-
-	/**
-	 * Called when a crash/assert is detected.
-	 */
-	void OnCrashDetected(const FString& ErrorMessage);
-
-	/**
-	 * Called before Sentry sends an event (crash or error).
-	 * This is where we attach the video.
-	 */
-	void OnBeforeSentryEvent();
-
-	/**
 	 * Finalize the current recording and save to disk.
 	 * @return Path to saved video, or empty if failed
 	 */
@@ -159,6 +143,12 @@ private:
 	bool AttachVideoToSentry(const FString& VideoPath);
 
 	/**
+	 * Pre-attach the video to Sentry scope before crashes occur.
+	 * This ensures the video is registered even if finalization fails.
+	 */
+	void PreAttachVideoToSentry();
+
+	/**
 	 * Clean up old crash video files.
 	 */
 	void CleanupOldVideos();
@@ -168,12 +158,38 @@ private:
 	 */
 	FString GenerateVideoFilename() const;
 
+	/**
+	 * Create crash metadata file to track recording state.
+	 * Used for recovery on next startup.
+	 */
+	void CreateCrashMetadataFile();
+
+	/**
+	 * Remove crash metadata file after successful completion.
+	 */
+	void RemoveCrashMetadataFile();
+
+	/**
+	 * Check for and recover crash videos from previous sessions.
+	 * Called on startup.
+	 */
+	void RecoverPreviousCrashVideos();
+
+	/**
+	 * Get the metadata file path for current recording.
+	 */
+	FString GetMetadataFilePath() const;
+
 private:
 	bool bIsRecording = false;
 	FCrashVideoConfig CurrentConfig;
 	FString CurrentSessionVideoPath;
 	int32 MaxVideosToKeep = 10;
 	
-	FDelegateHandle ErrorOutputDeviceDelegateHandle;
+	// Crash-resistant state tracking
+	FThreadSafeBool bCrashDetected;
+	
+	// Pre-attachment tracking
+	bool bVideoPreAttached = false;
 };
 

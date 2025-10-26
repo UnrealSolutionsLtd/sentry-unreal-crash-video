@@ -62,6 +62,7 @@ public:
 
 	void TryCaptureScreenshot();
 	void TryCaptureGpuDump();
+	void TryCaptureEmergencyCrashVideo();
 
 protected:
 	virtual void ConfigureHandlerPath(sentry_options_t* Options) {}
@@ -111,6 +112,7 @@ private:
 	bool isPiiAttachmentEnabled;
 	bool isScreenshotAttachmentEnabled;
 	bool isGpuDumpAttachmentEnabled;
+	bool isCrashVideoEnabled;
 
 	FString databaseParentPath;
 };

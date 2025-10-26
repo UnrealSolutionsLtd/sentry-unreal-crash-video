@@ -4,8 +4,8 @@
 #include "SentrySubsystem.h"
 #include "SentryAttachment.h"
 #include "SentryDefines.h"
-#include "SentryErrorOutputDevice.h"
 #include "SentryLibrary.h"
+#include "SentryModule.h"
 
 #include "Engine/Engine.h"
 #include "Misc/Paths.h"
@@ -13,6 +13,7 @@
 #include "HAL/PlatformFileManager.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "Misc/FileHelper.h"
+#include "HAL/PlatformProcess.h"
 
 #if HAS_RUNTIME_VIDEO_RECORDER
 #include "RuntimeVideoRecorder.h"
@@ -23,6 +24,12 @@
 
 void USentryCrashVideoHandler::BeginDestroy()
 {
+	// Clean up metadata file if normal shutdown
+	if (!bCrashDetected)
+	{
+		RemoveCrashMetadataFile();
+	}
+	
 	StopContinuousRecording();
 	Super::BeginDestroy();
 }
@@ -122,9 +129,19 @@ bool USentryCrashVideoHandler::StartContinuousRecording(const FCrashVideoConfig&
 	}
 
 	bIsRecording = true;
-
-	// Initialize crash detection hooks
-	InitializeCrashDetection();
+	bCrashDetected = false;
+	
+	// Check for and recover any videos from previous crashes FIRST
+	// (before creating new metadata to avoid recovering our own file)
+	RecoverPreviousCrashVideos();
+	
+	// Create metadata file for crash recovery
+	CreateCrashMetadataFile();
+	
+	// Note: We don't pre-attach the video here because:
+	// 1. The actual crash video file doesn't exist yet (circular buffer in memory)
+	// 2. When crash occurs, TryCaptureEmergencyCrashVideo() will encode and attach it
+	// 3. The crash recovery path has "_crash_recovery.mp4" suffix which differs from CurrentSessionVideoPath
 
 	// Clean up old videos
 	CleanupOldVideos();
@@ -159,13 +176,14 @@ void USentryCrashVideoHandler::StopContinuousRecording()
 	}
 
 	bIsRecording = false;
-	CurrentSessionVideoPath.Empty();
-
-	// Remove crash detection hooks
-	if (ErrorOutputDeviceDelegateHandle.IsValid())
+	
+	// Remove metadata file on normal stop
+	if (!bCrashDetected)
 	{
-		ErrorOutputDeviceDelegateHandle.Reset();
+		RemoveCrashMetadataFile();
 	}
+	
+	CurrentSessionVideoPath.Empty();
 #endif
 }
 
@@ -208,55 +226,40 @@ void USentryCrashVideoHandler::SetMaxVideosToKeep(int32 MaxVideos)
 	UE_LOG(LogSentrySdk, Log, TEXT("Max crash videos to keep set to: %d"), MaxVideosToKeep);
 }
 
-void USentryCrashVideoHandler::InitializeCrashDetection()
+void USentryCrashVideoHandler::PreAttachVideoToSentry()
 {
-	// Hook into Sentry's error output device to detect crashes/asserts
-	// Note: This is a simplified approach. In production, you might want to hook deeper
-	// into the crash handling system or use Sentry's BeforeSend callback.
-	
-	UE_LOG(LogSentrySdk, Log, TEXT("Crash detection hooks initialized."));
-	
-	// The video will be automatically attached when the recording stops during a crash
-	// because Runtime Video Recorder's LastSecondsToRecord feature saves on stop.
-}
-
-void USentryCrashVideoHandler::OnCrashDetected(const FString& ErrorMessage)
-{
-#if HAS_RUNTIME_VIDEO_RECORDER
-	if (!bIsRecording)
+	if (CurrentSessionVideoPath.IsEmpty())
 	{
+		UE_LOG(LogSentrySdk, Warning, TEXT("Cannot pre-attach video: path is empty."));
 		return;
 	}
 
-	UE_LOG(LogSentrySdk, Warning, TEXT("Crash detected - attempting to save crash video..."));
-	UE_LOG(LogSentrySdk, Warning, TEXT("Error: %s"), *ErrorMessage);
-
-	// Finalize and save the video
-	FString VideoPath = FinalizeAndSaveVideo();
-	
-	if (!VideoPath.IsEmpty())
+	USentrySubsystem* SentrySubsystem = GEngine->GetEngineSubsystem<USentrySubsystem>();
+	if (!SentrySubsystem || !SentrySubsystem->IsEnabled())
 	{
-		// Attach to Sentry
-		if (AttachVideoToSentry(VideoPath))
-		{
-			UE_LOG(LogSentrySdk, Log, TEXT("Crash video saved and attached: %s"), *VideoPath);
-		}
-		else
-		{
-			UE_LOG(LogSentrySdk, Error, TEXT("Failed to attach crash video to Sentry."));
-		}
+		UE_LOG(LogSentrySdk, Warning, TEXT("Sentry subsystem not available for pre-attachment."));
+		return;
+	}
+
+	// Pre-create attachment object for the video file
+	// This ensures Sentry knows about the video even if finalization fails
+	USentryAttachment* VideoAttachment = USentryLibrary::CreateSentryAttachmentWithPath(
+		CurrentSessionVideoPath,
+		FPaths::GetCleanFilename(CurrentSessionVideoPath),
+		TEXT("video/mp4")
+	);
+
+	if (VideoAttachment)
+	{
+		SentrySubsystem->AddAttachment(VideoAttachment);
+		bVideoPreAttached = true;
+		UE_LOG(LogSentrySdk, Log, TEXT("Video pre-attached to Sentry scope: %s"), *CurrentSessionVideoPath);
+		UE_LOG(LogSentrySdk, Log, TEXT("If a crash occurs, this video will be included in the report."));
 	}
 	else
 	{
-		UE_LOG(LogSentrySdk, Error, TEXT("Failed to save crash video."));
+		UE_LOG(LogSentrySdk, Warning, TEXT("Failed to pre-attach video to Sentry."));
 	}
-#endif
-}
-
-void USentryCrashVideoHandler::OnBeforeSentryEvent()
-{
-	// This would be called by Sentry's BeforeSend callback if integrated
-	// For now, we rely on the automatic attachment in OnCrashDetected
 }
 
 FString USentryCrashVideoHandler::FinalizeAndSaveVideo()
@@ -406,5 +409,200 @@ FString USentryCrashVideoHandler::GenerateVideoFilename() const
 	FString Timestamp = FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S"));
 	FString Filename = FString::Printf(TEXT("crash_video_%s.mp4"), *Timestamp);
 	return FPaths::Combine(CrashVideoDir, Filename);
+}
+
+FString USentryCrashVideoHandler::GetMetadataFilePath() const
+{
+	if (CurrentSessionVideoPath.IsEmpty())
+	{
+		FString CrashVideoDir = GetCrashVideoDirectory();
+		FString Timestamp = FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S"));
+		return FPaths::Combine(CrashVideoDir, FString::Printf(TEXT("crash_video_%s.meta"), *Timestamp));
+	}
+	
+	// Generate metadata path based on video path
+	FString BasePath = FPaths::GetPath(CurrentSessionVideoPath);
+	FString BaseFilename = FPaths::GetBaseFilename(CurrentSessionVideoPath);
+	return FPaths::Combine(BasePath, BaseFilename + TEXT(".meta"));
+}
+
+void USentryCrashVideoHandler::CreateCrashMetadataFile()
+{
+	if (CurrentSessionVideoPath.IsEmpty())
+	{
+		return;
+	}
+
+	FString MetadataPath = GetMetadataFilePath();
+	
+	// Create metadata with recording information
+	FString MetadataContent = FString::Printf(
+		TEXT("VideoPath=%s\nStatus=RECORDING\nStartTime=%s\nDuration=%.1f\nFPS=%d\nResolution=%dx%d\n"),
+		*FPaths::ConvertRelativePathToFull(CurrentSessionVideoPath),
+		*FDateTime::Now().ToString(),
+		CurrentConfig.LastSecondsToRecord,
+		CurrentConfig.TargetFPS,
+		CurrentConfig.Width,
+		CurrentConfig.Height
+	);
+
+	if (FFileHelper::SaveStringToFile(MetadataContent, *MetadataPath))
+	{
+		UE_LOG(LogSentrySdk, Verbose, TEXT("Crash metadata file created: %s"), *MetadataPath);
+	}
+	else
+	{
+		UE_LOG(LogSentrySdk, Warning, TEXT("Failed to create crash metadata file: %s"), *MetadataPath);
+	}
+}
+
+void USentryCrashVideoHandler::RemoveCrashMetadataFile()
+{
+	FString MetadataPath = GetMetadataFilePath();
+	
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	if (PlatformFile.FileExists(*MetadataPath))
+	{
+		if (PlatformFile.DeleteFile(*MetadataPath))
+		{
+			UE_LOG(LogSentrySdk, Verbose, TEXT("Crash metadata file removed: %s"), *MetadataPath);
+		}
+	}
+}
+
+void USentryCrashVideoHandler::RecoverPreviousCrashVideos()
+{
+	FString CrashVideoDir = GetCrashVideoDirectory();
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+
+	if (!PlatformFile.DirectoryExists(*CrashVideoDir))
+	{
+		return;
+	}
+
+	// Find all .meta files (indicates incomplete recordings or buffer dumps)
+	TArray<FString> MetadataFiles;
+	PlatformFile.FindFilesRecursively(MetadataFiles, *CrashVideoDir, TEXT(".meta"));
+
+	if (MetadataFiles.Num() == 0)
+	{
+		return;
+	}
+
+	UE_LOG(LogSentrySdk, Warning, TEXT("Found %d crash metadata file(s) from previous session(s)."), MetadataFiles.Num());
+
+	for (const FString& MetadataPath : MetadataFiles)
+	{
+		// Read metadata file
+		FString MetadataContent;
+		if (!FFileHelper::LoadFileToString(MetadataContent, *MetadataPath))
+		{
+			UE_LOG(LogSentrySdk, Warning, TEXT("Failed to read metadata file: %s"), *MetadataPath);
+			continue;
+		}
+
+		// Parse metadata
+		FString VideoPath;
+		FString CrashVideoPath;
+		FString Status;
+		TArray<FString> Lines;
+		MetadataContent.ParseIntoArrayLines(Lines);
+		
+		for (const FString& Line : Lines)
+		{
+			if (Line.StartsWith(TEXT("VideoPath=")))
+			{
+				VideoPath = Line.RightChop(10); // Remove "VideoPath=" prefix
+			}
+			else if (Line.StartsWith(TEXT("CrashVideoPath=")))
+			{
+				CrashVideoPath = Line.RightChop(15); // Remove "CrashVideoPath=" prefix
+			}
+			else if (Line.StartsWith(TEXT("Status=")))
+			{
+				Status = Line.RightChop(7); // Remove "Status=" prefix
+			}
+		}
+
+		// Handle emergency crash recovery videos
+		if (Status == TEXT("CRASH_RECORDED"))
+		{
+			UE_LOG(LogSentrySdk, Log, TEXT("Found crash video metadata from previous session: %s"), *CrashVideoPath);
+			
+			// EncodeCircularBufferToVideo creates a fully encoded MP4 file with "_crash_recovery.mp4" suffix
+			FString CrashRecoveryVideoPath = CrashVideoPath + TEXT("_crash_recovery.mp4");
+			
+			// Check if the encoded crash recovery video exists
+			if (PlatformFile.FileExists(*CrashRecoveryVideoPath))
+			{
+				int64 FileSize = PlatformFile.FileSize(*CrashRecoveryVideoPath);
+				
+				if (FileSize > 0)
+				{
+					UE_LOG(LogSentrySdk, Log, TEXT("Found crash video from previous session: %s (%.2f MB)"), 
+						*CrashRecoveryVideoPath, FileSize / (1024.0f * 1024.0f));
+					
+					// The video was already attached to the crash report by TryCaptureEmergencyCrashVideo()
+					// during the crash. We just need to clean up the leftover files.
+					// Don't send it again to avoid duplicate uploads.
+					UE_LOG(LogSentrySdk, Log, TEXT("Video was already attached to crash report. Cleaning up."));
+					
+					// Delete the video file (it was already sent with the crash)
+					PlatformFile.DeleteFile(*CrashRecoveryVideoPath);
+				}
+				else
+				{
+					UE_LOG(LogSentrySdk, Warning, TEXT("Crash recovery video is empty, deleting: %s"), *CrashRecoveryVideoPath);
+					PlatformFile.DeleteFile(*CrashRecoveryVideoPath);
+				}
+			}
+			else
+			{
+				UE_LOG(LogSentrySdk, Verbose, TEXT("Crash recovery video not found (may have been cleaned up already): %s"), *CrashRecoveryVideoPath);
+			}
+			
+			// Clean up metadata file after processing
+			PlatformFile.DeleteFile(*MetadataPath);
+			continue; // Continue to next metadata file
+		}
+
+		// Normal metadata cleanup (Status=RECORDING files)
+		// These are created when recording starts and should be deleted when recording stops normally.
+		// If they exist on startup, it means the app terminated while recording was active.
+		if (VideoPath.IsEmpty())
+		{
+			UE_LOG(LogSentrySdk, Verbose, TEXT("Cleaning up orphaned metadata file: %s"), *MetadataPath);
+			PlatformFile.DeleteFile(*MetadataPath);
+			continue;
+		}
+
+		// Check if a video file exists (shouldn't happen for Status=RECORDING)
+		if (PlatformFile.FileExists(*VideoPath))
+		{
+			int64 FileSize = PlatformFile.FileSize(*VideoPath);
+			
+			if (FileSize > 0)
+			{
+				UE_LOG(LogSentrySdk, Log, TEXT("Found orphaned video file from previous session: %s (%.2f MB)"), 
+					*VideoPath, FileSize / (1024.0f * 1024.0f));
+				
+				// This video file shouldn't exist for Status=RECORDING metadata.
+				// It may be from a manual capture or interrupted session.
+				// Just clean it up (it was likely already sent or is incomplete).
+				UE_LOG(LogSentrySdk, Log, TEXT("Cleaning up orphaned video file."));
+				PlatformFile.DeleteFile(*VideoPath);
+			}
+			else
+			{
+				UE_LOG(LogSentrySdk, Verbose, TEXT("Deleting empty video file: %s"), *VideoPath);
+				PlatformFile.DeleteFile(*VideoPath);
+			}
+		}
+
+		// Clean up metadata file
+		PlatformFile.DeleteFile(*MetadataPath);
+	}
+
+	UE_LOG(LogSentrySdk, Log, TEXT("Crash video recovery complete."));
 }
 

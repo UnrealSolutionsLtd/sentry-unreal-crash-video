@@ -17,6 +17,7 @@
 #include "SentryBeforeLogHandler.h"
 #include "SentryBeforeSendHandler.h"
 #include "SentryBreadcrumb.h"
+#include "SentryCrashVideoHandler.h"
 #include "SentryDefines.h"
 #include "SentryEvent.h"
 #include "SentryLog.h"
@@ -40,8 +41,13 @@
 #include "HAL/ExceptionHandling.h"
 #include "HAL/FileManager.h"
 #include "Misc/CoreDelegates.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "UObject/UObjectThreadContext.h"
+
+#if HAS_RUNTIME_VIDEO_RECORDER
+#include "RuntimeVideoRecorder.h"
+#endif
 
 extern CORE_API bool GIsGPUCrashed;
 
@@ -215,6 +221,11 @@ sentry_value_t FGenericPlatformSentrySubsystem::OnCrash(const sentry_ucontext_t*
 		TryCaptureGpuDump();
 	}
 
+	if (isCrashVideoEnabled)
+	{
+		TryCaptureEmergencyCrashVideo();
+	}
+
 	// At this point crash events are handled the same way as non-fatal ones,
 	// so we defer to `OnBeforeSend` to invoke the custom `beforeSend` handler (if configured)
 	return OnBeforeSend(event, nullptr, closure, true);
@@ -300,6 +311,7 @@ FGenericPlatformSentrySubsystem::FGenericPlatformSentrySubsystem()
 	, isPiiAttachmentEnabled(false)
 	, isScreenshotAttachmentEnabled(false)
 	, isGpuDumpAttachmentEnabled(false)
+	, isCrashVideoEnabled(false)
 {
 }
 
@@ -341,6 +353,8 @@ void FGenericPlatformSentrySubsystem::InitWithSettings(const USentrySettings* se
 	}
 
 	isGpuDumpAttachmentEnabled = settings->AttachGpuDump;
+	
+	isCrashVideoEnabled = settings->AttachCrashVideo;
 
 	if (settings->UseProxy)
 	{
@@ -870,6 +884,51 @@ void FGenericPlatformSentrySubsystem::TryCaptureGpuDump()
 		MakeShareable(new FGenericPlatformSentryAttachment(GpuDumpPath, FPaths::GetCleanFilename(GpuDumpPath), TEXT("application/octet-stream")));
 
 	AddFileAttachment(GpuDumpAttachment);
+}
+
+void FGenericPlatformSentrySubsystem::TryCaptureEmergencyCrashVideo()
+{
+#if HAS_RUNTIME_VIDEO_RECORDER
+	URuntimeVideoRecorder* VideoRecorder = GEngine ? GEngine->GetEngineSubsystem<URuntimeVideoRecorder>() : nullptr;
+	if (!VideoRecorder || !VideoRecorder->IsRecordingInProgress())
+	{
+		return;
+	}
+
+	// Encode the circular buffer to video immediately
+	FString CrashVideoDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("SentryCrashVideos"));
+	FString Timestamp = FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S"));
+	FString OutputBasePath = FPaths::Combine(CrashVideoDir, FString::Printf(TEXT("crash_video_%s"), *Timestamp));
+	
+	bool bSuccess = VideoRecorder->EncodeCircularBufferToVideo(OutputBasePath);
+	
+	if (!bSuccess)
+	{
+		// Video encoding failed, nothing to attach
+		return;
+	}
+	
+	// The encoded video file path (EncodeCircularBufferToVideo appends "_crash_recovery.mp4")
+	FString VideoPath = OutputBasePath + TEXT("_crash_recovery.mp4");
+	
+	// Create Sentry attachment immediately (same pattern as screenshot)
+	TSharedPtr<ISentryAttachment> VideoAttachment =
+		MakeShareable(new FGenericPlatformSentryAttachment(VideoPath, TEXT("crash_video.mp4"), TEXT("video/mp4")));
+	
+	AddFileAttachment(VideoAttachment);
+	
+	// Create metadata file for recovery (as backup in case attachment fails)
+	FString MetadataPath = FPaths::Combine(CrashVideoDir, FString::Printf(TEXT("crash_video_%s.meta"), *Timestamp));
+	FString VideoPathFull = FPaths::ConvertRelativePathToFull(VideoPath);
+	FString CrashVideoPathFull = FPaths::ConvertRelativePathToFull(OutputBasePath);
+	FString MetadataContent = FString::Printf(
+		TEXT("VideoPath=%s\nCrashVideoPath=%s\nStatus=CRASH_RECORDED\nTimestamp=%s\n"),
+		*VideoPathFull,
+		*CrashVideoPathFull,
+		*FDateTime::Now().ToString()
+	);
+	FFileHelper::SaveStringToFile(MetadataContent, *MetadataPath);
+#endif
 }
 
 FString FGenericPlatformSentrySubsystem::GetHandlerPath() const
