@@ -9,7 +9,7 @@
 </p>
 <p align="center">
 
-Unreal Engine Crash Video Recording via Runtime Video Recorder And Sentry
+Unreal Engine Crash Video Recording
 ===========
 
 This project showcases how to use both Sentry and [Runtime Video Recorder](https://unrealsolutions.com/) to capture a game video before the crash happens.   
