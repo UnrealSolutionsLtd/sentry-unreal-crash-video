@@ -2,6 +2,9 @@
   <a href="https://sentry.io" target="_blank" align="left">
     <img src="https://raw.githubusercontent.com/getsentry/sentry-unity/main/.github/sentry-wordmark-dark-400x119.svg" width="280">
   </a>
+  <a href="https://unrealsolutions.com" target="_blank" align="right">
+    <img src="https://raw.githubusercontent.com/UnrealSolutionsLtd/RuntimeVideoRecorderDocs/main/Icon128.PNG" width="280">
+  </a>
   <br />
 </p>
 <p align="center">
