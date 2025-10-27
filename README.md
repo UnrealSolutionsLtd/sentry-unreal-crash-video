@@ -6,14 +6,16 @@
 </p>
 <p align="center">
 
-Sentry SDK for Unreal Engine
+Sentry SDK for Unreal Engine + Crash Video Recording
 ===========
 
-This project is an SDK for Unreal Engine that wraps different Sentry's SDKs for both desktop and mobile. Also, it [has a stable support for the Unreal Engine crash reporter](https://docs.sentry.io/platforms/unreal/setup-crashreport/).
+This project showcases how to use both Sentry and [Runtime Video Recorder](https://unrealsolutions.com/) to capture a game video before the crash happens.   
 
 ## Downloads
 
-The SDK can be downloaded from the [Releases] page, which also lists the
+Download Runtime Video Recorder [here](https://unrealsolutions.com/).
+
+The Sentry SDK can be downloaded from the [Releases] page, which also lists the
 changelog of every version, or from the [UE Marketplace] page via Epic Games launcher.
 
 [releases]: https://github.com/getsentry/sentry-unreal/releases
@@ -28,9 +30,6 @@ The SDK currently supports and is tested on the following platforms:
 - Linux 
 - Android
 - iOS
-- PlayStation
-- Xbox
-- Nintendo Switch
 
 The SDK compiles with three latest engine versions.
 
